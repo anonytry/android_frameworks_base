@@ -142,6 +142,7 @@ public class SystemSettings {
                 Settings.System.QS_TILE_GRADIENT_ENABLED,
                 Settings.System.QS_BRIGHTNESS_GRADIENT_ENABLED,
                 Settings.System.QS_VOLUME_GRADIENT_ENABLED,
+                Settings.System.QS_CHIP_GRADIENT_ENABLED,
                 Settings.System.GRADIENT_START_COLOR,
                 Settings.System.GRADIENT_END_COLOR,
                 Settings.System.STATUS_BAR_SHOW_DYNAMIC_ISLAND,
@@ -154,7 +155,8 @@ public class SystemSettings {
                 Settings.System.STATUS_BAR_DYNAMIC_ISLAND_LYRICS,
                 Settings.System.STATUS_BAR_DYNAMIC_ISLAND_ONGOING_ACTIVITIES,
                 Settings.System.STATUS_BAR_DYNAMIC_ISLAND_CALLS,
-                Settings.System.STATUS_BAR_DYNAMIC_ISLAND_WIDTH
+                Settings.System.STATUS_BAR_DYNAMIC_ISLAND_WIDTH,
+                Settings.System.STATUS_BAR_DYNAMIC_ISLAND_HEIGHT_SCALE
         ));
         return settings.toArray(new String[0]);
     }

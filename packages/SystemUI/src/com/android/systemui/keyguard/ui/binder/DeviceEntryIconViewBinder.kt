@@ -41,6 +41,7 @@ import com.android.internal.util.derp.derpUtils
 import com.android.systemui.Flags
 import com.android.systemui.Flags.enableLockscreenBlur
 import com.android.systemui.biometrics.UdfpsIconDrawable
+import com.android.systemui.common.ui.view.BackgroundBlurAlphaSync
 import com.android.systemui.common.ui.view.TouchHandlingView
 import com.android.systemui.keyguard.ui.view.DeviceEntryIconView
 import com.android.systemui.keyguard.ui.viewmodel.DeviceEntryBackgroundViewModel
@@ -62,6 +63,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
 object DeviceEntryIconViewBinder {
@@ -301,6 +303,18 @@ object DeviceEntryIconViewBinder {
                     // Start with an empty state
                     Log.d(TAG, "Initializing device entry fgIconView")
                     fgIconView.setImageState(StateSet.NOTHING, /* merge */ false)
+                    launch("$TAG#viewModel.areLyricsShowingOnLockscreen") {
+                        combine(
+                            viewModel.areLyricsShowingOnLockscreen,
+                            fgViewModel.viewModel,
+                        ) { areLyricsShowing, fgIconVm ->
+                            val isLockOrUnlock =
+                                fgIconVm.type == DeviceEntryIconView.IconType.LOCK ||
+                                    fgIconVm.type == DeviceEntryIconView.IconType.UNLOCK
+                            if (areLyricsShowing && isLockOrUnlock) 0f else 1f
+                        }
+                            .collect { alpha -> fgIconView.alpha = alpha }
+                    }
                     launch("$TAG#fpIconView.viewModel") {
                         fgViewModel.viewModel.collect { viewModel ->
                             Log.d(TAG, "Updating device entry icon image state $viewModel")
@@ -347,8 +361,17 @@ object DeviceEntryIconViewBinder {
                                 setVisible(false, false)
                             }
                         bgView.addOnLayoutChangeListener(layoutChangeListener)
+                        // The blur region only knows the drawable's own alpha: follow the alpha
+                        // the icon is really drawn with (keyguard root fade on unlock, shade
+                        // drag) so the blur does not outlive the icon.
+                        val blurAlphaSync =
+                            BackgroundBlurAlphaSync(bgView) {
+                                    bgView.background as? BackgroundBlurDrawable
+                                }
+                                .start()
                         bgView.doOnDetach {
                             bgView.removeOnLayoutChangeListener(layoutChangeListener)
+                            blurAlphaSync.dispose()
                         }
 
                         launch("$TAG#windowRootViewBlurInteractor.isBlurCurrentlySupported") {

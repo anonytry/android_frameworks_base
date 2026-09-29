@@ -56,19 +56,20 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.mandatorySystemGestures
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -374,17 +375,23 @@ fun DefaultEditTileGrid(
         },
         bottomBar = {
             if (layoutModeEnabled) {
-                Box(
-                    Modifier.fillMaxWidth()
-                        .padding(WindowInsets.navigationBars.asPaddingValues())
-                        .padding(bottom = 8.dp),
-                    contentAlignment = Alignment.Center,
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    editModeTabs!!.Content(
-                        viewModel = editModeTabsViewModel!!,
-                        colors = EditModeTabsDefaults.colors(),
-                        modifier = Modifier,
-                    )
+                    Box(
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        editModeTabs!!.Content(
+                            viewModel = editModeTabsViewModel!!,
+                            colors = EditModeTabsDefaults.colors(),
+                            modifier = Modifier,
+                        )
+                    }
+                    // Do not let the tab bar sit on the home handle. navigationBars can be 0
+                    // when IME space is hidden; mandatorySystemGestures stays the handle height.
+                    PassThroughBottomGestureZone()
                 }
             }
         },
@@ -507,6 +514,22 @@ private fun EditModeScrollableColumn(
 }
 
 @Composable
+private fun editModeBottomGestureInsets(): WindowInsets {
+    return WindowInsets.navigationBars.union(WindowInsets.mandatorySystemGestures)
+}
+
+/** Occupies the home-handle inset without consuming the swipe, so STL can take it to Home. */
+@Composable
+private fun PassThroughBottomGestureZone(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .windowInsetsBottomHeight(editModeBottomGestureInsets())
+            .scrollable(rememberScrollableState { 0f }, orientation = Orientation.Vertical)
+    )
+}
+
+@Composable
 private fun NavBarInsetScrollZone(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Box(modifier.fillMaxWidth()) {
         content()
@@ -515,13 +538,7 @@ private fun NavBarInsetScrollZone(modifier: Modifier = Modifier, content: @Compo
         // with a higher zIndex than the scrollable list of tiles.
         // This box intercepts scroll gestures in the navigation bar area without consuming them to
         // allow STL to handle them.
-        Box(
-            Modifier.align(Alignment.BottomCenter)
-                .zIndex(2f)
-                .fillMaxWidth()
-                .windowInsetsBottomHeight(WindowInsets.navigationBars)
-                .scrollable(rememberScrollableState { 0f }, orientation = Orientation.Vertical)
-        )
+        PassThroughBottomGestureZone(Modifier.align(Alignment.BottomCenter).zIndex(2f))
     }
 }
 
@@ -960,13 +977,21 @@ fun LazyGridScope.EditTiles(
             is TileGridCell ->
                 if (listState.isMoving(cell.tile.tileSpec)) {
                     // If the tile is being moved, replace it with a visible spacer
+                    val classicStyle = rememberQSPanelStyle()
+                    val iconShapeKey = rememberQSTileIconShapeKey()
+                    val placeholderShape =
+                        if (classicStyle) {
+                            QSTileIconShapes.shapeForEditMode(iconShapeKey)
+                        } else {
+                            RoundedCornerShape(InactiveTileCornerRadius)
+                        }
                     SpacerGridCell(
                         Modifier.background(
                             color =
                                 MaterialTheme.colorScheme.secondary.copy(
                                     alpha = EditModeTileDefaults.PLACEHOLDER_ALPHA
                                 ),
-                            shape = RoundedCornerShape(InactiveTileCornerRadius),
+                            shape = placeholderShape,
                         )
                     )
                 } else {
@@ -1024,9 +1049,10 @@ private fun LazyGridItemScope.TileGridCell(
     val tileState by rememberTileState(cell.tile, selectionState)
     val resizingState = rememberResizingState(cell.tile.tileSpec, cell.isIcon)
 
-    if (tileState == TileState.Selected) {
+    val classicStyle = rememberQSPanelStyle()
+    if (tileState == TileState.Selected && !classicStyle) {
         // If the tile is selected, listen to new target values from the draggable anchor to toggle
-        // the tile's size
+        // the tile's size. Classic circular tiles are always icon-sized, so resizing is a no-op.
         LaunchedEffect(resizingState) {
             snapshotFlow { resizingState.temporaryResizeOperation }
                 .onEach { onResize(it) }
@@ -1075,7 +1101,7 @@ private fun LazyGridItemScope.TileGridCell(
         when (tileState) {
             TileState.Removable ->
                 stringResource(id = R.string.accessibility_qs_edit_remove_tile_action)
-            TileState.Selected -> toggleSizeLabel
+            TileState.Selected -> toggleSizeLabel.takeIf { !classicStyle }
             TileState.New,
             TileState.None,
             TileState.Placeable,
@@ -1103,7 +1129,7 @@ private fun LazyGridItemScope.TileGridCell(
         onClick = {
             if (tileState == TileState.Removable) {
                 removeTile()
-            } else if (tileState == TileState.Selected) {
+            } else if (tileState == TileState.Selected && !classicStyle) {
                 coroutineScope.launch { resizingState.toggleCurrentValue() }
             }
         },
@@ -1153,13 +1179,18 @@ private fun LazyGridItemScope.TileGridCell(
                                 }
                             )
                         } else {
-                            // Don't allow for resizing during placement mode
-                            actions.add(
-                                CustomAccessibilityAction(toggleSizeLabel) {
-                                    onResize(FinalResizeOperation(cell.tile.tileSpec, !cell.isIcon))
-                                    true
-                                }
-                            )
+                            // Don't allow for resizing during placement mode. Classic circular
+                            // tiles are always icon-sized, so hide the size action there too.
+                            if (!classicStyle) {
+                                actions.add(
+                                    CustomAccessibilityAction(toggleSizeLabel) {
+                                        onResize(
+                                            FinalResizeOperation(cell.tile.tileSpec, !cell.isIcon)
+                                        )
+                                        true
+                                    }
+                                )
+                            }
                             actions.add(
                                 CustomAccessibilityAction(toggleSelectionLabel) {
                                     selectionState.toggleSelection(cell.tile.tileSpec)
@@ -1183,11 +1214,28 @@ private fun LazyGridItemScope.TileGridCell(
                     color = { colors.background },
                 )
                 .keyboardShortcuts(cell.tile.tileSpec, selectionState) {
-                    onResize(FinalResizeOperation(cell.tile.tileSpec, !cell.isIcon))
+                    if (!classicStyle) {
+                        onResize(FinalResizeOperation(cell.tile.tileSpec, !cell.isIcon))
+                    }
                 }
                 .thenIf(isSelectable) { selectableModifier }
         ) {
-            EditTile(tile = cell.tile, state = resizingState, progress = resizingState::progress)
+            if (classicStyle) {
+                // Card EditTile draws a circular dual-target well based on resize progress.
+                // Classic tiles are always icon-sized, so that well sits inside the icon shape.
+                SmallTileContent(
+                    iconProvider = { cell.tile.icon },
+                    color = colors.icon,
+                    animateToEnd = true,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            } else {
+                EditTile(
+                    tile = cell.tile,
+                    state = resizingState,
+                    progress = resizingState::progress,
+                )
+            }
         }
     }
 }
@@ -1478,22 +1526,32 @@ private fun Modifier.tileBackground(
 ): Modifier {
     val panelStyle = rememberQSPanelStyle()
     val shapeMode = rememberTileShapeMode()
-    return if (panelStyle || (shapeMode == 3 && iconOnly)) {
-        // Draw a centered circle that fits the tile's min dimension instead of clipping to a
-        // rounded rect
-        drawBehind {
-            val radius = minOf(size.width, size.height) / 2f
-            drawCircle(
-                color = color(),
-                radius = radius,
-                center = Offset(size.width / 2f, size.height / 2f),
-                alpha = alpha(),
-            )
+    val iconShapeKey = rememberQSTileIconShapeKey()
+    val iconShape = remember(iconShapeKey) { QSTileIconShapes.shapeForEditMode(iconShapeKey) }
+    return when {
+        panelStyle -> {
+            // Classic tiles use the configured icon shape (cookie, squircle, …). Draw it
+            // centered so non-square cells keep the correct silhouette.
+            drawBehind { drawCenteredIconShape(iconShape, color = color(), alpha = alpha()) }
         }
-    } else {
-        // Clip tile contents from overflowing past the tile
-        clip(editTileShape(shapeMode, cornerRadius)).drawBehind {
-            drawRect(color(), alpha = alpha())
+        shapeMode == 3 && iconOnly -> {
+            // Draw a centered circle that fits the tile's min dimension instead of clipping to a
+            // rounded rect
+            drawBehind {
+                val radius = minOf(size.width, size.height) / 2f
+                drawCircle(
+                    color = color(),
+                    radius = radius,
+                    center = Offset(size.width / 2f, size.height / 2f),
+                    alpha = alpha(),
+                )
+            }
+        }
+        else -> {
+            // Clip tile contents from overflowing past the tile
+            clip(editTileShape(shapeMode, cornerRadius)).drawBehind {
+                drawRect(color(), alpha = alpha())
+            }
         }
     }
 }

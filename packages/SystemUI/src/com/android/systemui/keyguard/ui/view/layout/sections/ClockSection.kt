@@ -109,6 +109,11 @@ constructor(
     ): ConstraintSet {
         // Add constraint between rootView and clockContainer
         applyDefaultConstraints(constraintSet)
+        // Reset the date/weather row horizontal bias before the clock re-applies its own. The
+        // Words clock left-aligns the row (bias 0); without this, that bias would stick when
+        // switching back to a centred clock, since this section (unlike SmartspaceSection) is
+        // re-applied on every clock change. Clocks that want it left re-set their bias below.
+        constraintSet.setHorizontalBias(sharedR.id.date_smartspace_view_large, 0.5f)
         getNonTargetClockFace(clock).applyConstraints(constraintSet)
         getTargetClockFace(clock).applyConstraints(constraintSet)
 
@@ -136,16 +141,12 @@ constructor(
                     )
                 }
             } else {
-                if (aodBurnInViewModel.movement.value.scaleClockOnly) {
-                    setScaleX(
-                        getTargetClockFace(clock).views,
-                        aodBurnInViewModel.movement.value.scale,
-                    )
-                    setScaleY(
-                        getTargetClockFace(clock).views,
-                        aodBurnInViewModel.movement.value.scale,
-                    )
-                }
+                // Clocks that only translate in AOD are never scaled; reset explicitly, since the
+                // constraint set is cloned from the views and would carry a stale scale along.
+                val movement = aodBurnInViewModel.movement.value
+                val scale = if (movement.scaleClockOnly) movement.scale else 1F
+                setScaleX(getTargetClockFace(clock).views, scale)
+                setScaleY(getTargetClockFace(clock).views, scale)
             }
         }
     }

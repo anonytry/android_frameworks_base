@@ -190,6 +190,13 @@ fun AxDynamicBarKeyguardChip(
         } else {
             isBatteryChipVisible && isEnabled && isKeyguardEnabled && !isDozing
         }
+        val suppressKeyguardIndication = isOnKeyguard && canShowChipOnKeyguard
+        LaunchedEffect(suppressKeyguardIndication) {
+            viewModel.setKeyguardIndicationSuppressed(suppressKeyguardIndication)
+        }
+        DisposableEffect(Unit) {
+            onDispose { viewModel.setKeyguardIndicationSuppressed(false) }
+        }
 
         val mediaControlModel by viewModel.interactor.mediaControlChipModel.collectAsStateWithLifecycle()
         val hasScrollableLyrics = isLockscreenMediaLyricsEnabled && 
@@ -642,11 +649,12 @@ private fun KeyguardBatteryChip(
 
     Box(contentAlignment = Alignment.Center) {
         Row(
-            modifier = modifier
+            modifier = Modifier
+                .widthIn(min = 48.dp, max = 260.dp)
+                .then(modifier)
                 .height(dynamicHeight)
                 .clip(ChipShape)
                 .background(accent)
-                .widthIn(min = 48.dp, max = 260.dp)
                 .padding(horizontal = SpaceMd)
                 .animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec()),
             verticalAlignment = Alignment.CenterVertically,
@@ -1006,7 +1014,7 @@ private fun secondaryTextFor(event: IslandEvent): String? = when (event) {
     is IslandEvent.Vpn,
     is IslandEvent.AppSwitch -> null
     is IslandEvent.Charging -> event.timeRemaining
-    is IslandEvent.Bluetooth -> if (event.batteryLevel >= 0) "${event.batteryLevel}%" else null
+    is IslandEvent.Bluetooth -> event.batterySummary()
     is IslandEvent.Alarm -> {
         if (event.triggerTimeMs > 0) {
             val cal = Calendar.getInstance().apply { timeInMillis = event.triggerTimeMs }

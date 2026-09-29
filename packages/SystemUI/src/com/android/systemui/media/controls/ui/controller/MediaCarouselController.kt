@@ -36,9 +36,6 @@ import android.view.animation.PathInterpolator
 import android.widget.ImageView
 import android.widget.LinearLayout
 import androidx.annotation.VisibleForTesting
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.app.tracing.traceSection
 import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.keyguard.KeyguardUpdateMonitorCallback
@@ -56,7 +53,6 @@ import com.android.systemui.keyguard.shared.model.KeyguardState.DOZING
 import com.android.systemui.keyguard.shared.model.KeyguardState.GONE
 import com.android.systemui.keyguard.shared.model.KeyguardState.LOCKSCREEN
 import com.android.systemui.keyguard.shared.model.TransitionState
-import com.android.systemui.lifecycle.repeatWhenAttached
 import com.android.systemui.media.controls.domain.pipeline.MediaDataManager
 import com.android.systemui.media.controls.shared.model.MediaData
 import com.android.systemui.media.controls.ui.controller.MediaPlayerData.visiblePlayerKeys
@@ -83,6 +79,8 @@ import com.android.systemui.util.boundsOnScreen
 import com.android.systemui.util.concurrency.DelayableExecutor
 import com.android.systemui.util.settings.GlobalSettings
 import com.android.systemui.util.settings.SecureSettings
+import com.android.systemui.axdynamicbar.domain.AxDynamicBarSettings
+import com.android.systemui.axdynamicbar.domain.allowsStockLockscreenMediaPlayer
 import com.android.systemui.util.settings.SettingsProxyExt.observerFlow
 import com.android.systemui.util.time.SystemClock
 import dagger.Lazy
@@ -101,8 +99,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val TAG = "MediaCarouselController"
@@ -452,12 +452,9 @@ constructor(
             }
         )
         keyguardUpdateMonitor.registerCallback(keyguardUpdateMonitorCallback)
-        mediaCarousel.repeatWhenAttached {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                listenForAnyStateToLockscreenTransition(this)
-                listenForAnyStateToDozingTransition(this)
-            }
-        }
+
+        listenForAnyStateToLockscreenTransition(applicationScope)
+        listenForAnyStateToDozingTransition(applicationScope)
         listenForAnyStateToGoneKeyguardTransition(applicationScope)
         listenForLockscreenSettingChanges(applicationScope)
 
@@ -510,10 +507,13 @@ constructor(
         return scope.launch {
             keyguardTransitionInteractor
                 .isFinishedIn(content = Scenes.Gone, stateWithoutSceneContainer = GONE)
-                .filter { it }
-                .collect {
-                    showMediaCarousel()
-                    updateHostVisibility()
+                .collect { isOnGone ->
+                    if (isOnGone) {
+                        showMediaCarousel()
+                        updateHostVisibility()
+                    } else if (!allowMediaPlayerOnLockScreen) {
+                        updateHostVisibility()
+                    }
                 }
         }
     }
@@ -544,10 +544,14 @@ constructor(
     @VisibleForTesting
     internal fun listenForLockscreenSettingChanges(scope: CoroutineScope): Job {
         return scope.launch {
-            secureSettings
-                .observerFlow(UserHandle.USER_ALL, Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN)
-                // query to get initial value
-                .onStart { emit(Unit) }
+            combine(
+                secureSettings
+                    .observerFlow(UserHandle.USER_ALL, Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN)
+                    .onStart { emit(Unit) },
+                secureSettings
+                    .observerFlow(UserHandle.USER_ALL, AxDynamicBarSettings.KEY_LOCKSCREEN_MEDIA_ENABLED)
+                    .onStart { emit(Unit) },
+            ) { _, _ -> }
                 .map { getMediaLockScreenSetting() }
                 .distinctUntilChanged()
                 .flowOn(backgroundDispatcher)
@@ -561,24 +565,17 @@ constructor(
     @VisibleForTesting
     internal fun listenForAnyStateToDozingTransition(scope: CoroutineScope): Job {
         return scope.launch {
-            keyguardTransitionInteractor
-                .transition(Edge.create(to = DOZING))
-                .filter { it.transitionState == TransitionState.FINISHED }
-                .collect {
-                    if (!allowMediaPlayerOnLockScreen) {
-                        updateHostVisibility()
-                    }
+            keyguardTransitionInteractor.isInTransition(Edge.create(to = DOZING)).collect {
+                if (!allowMediaPlayerOnLockScreen) {
+                    updateHostVisibility()
                 }
+            }
         }
     }
 
     private suspend fun getMediaLockScreenSetting(): Boolean {
         return withContext(backgroundDispatcher) {
-            secureSettings.getBoolForUser(
-                Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN,
-                true,
-                UserHandle.USER_CURRENT,
-            )
+            secureSettings.allowsStockLockscreenMediaPlayer()
         }
     }
 

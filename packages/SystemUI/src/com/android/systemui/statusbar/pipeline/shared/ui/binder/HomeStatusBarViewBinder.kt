@@ -351,6 +351,9 @@ constructor(
                     val configListener =
                         object : ConfigurationController.ConfigurationListener {
                             override fun onThemeChanged() {
+                                leftClock.refreshTypeface()
+                                centerClock?.refreshTypeface()
+                                rightClock?.refreshTypeface()
                                 chipAppearanceGeneration.update { it + 1 }
                             }
 
@@ -468,8 +471,26 @@ constructor(
                 launch {
                     viewModel.isNotificationIconContainerVisible.collect {
                         lyricController.updateNotificationIconsVisibility(it)
-                        leftLogo.adjustVisibility(it)
                     }
+                }
+
+                launch {
+                    combine(
+                            viewModel.isNotificationIconContainerVisible,
+                            viewModel.hideStartSideContentForHeadsUp,
+                        ) { visibilityModel, hideForHun ->
+                            visibilityModel to hideForHun
+                        }
+                        .collect { (visibilityModel, hideForHun) ->
+                            leftLogo.setHiddenForHeadsUp(hideForHun)
+                            val logoVisibility =
+                                if (leftLogo.shouldShowLogo()) {
+                                    visibilityModel
+                                } else {
+                                    visibilityModel.copy(visibility = View.GONE)
+                                }
+                            leftLogo.adjustVisibility(logoVisibility)
+                        }
                 }
 
                 launch {
@@ -494,6 +515,12 @@ constructor(
                 launch {
                     viewModel.isLyricTranslationEnabled.collect {
                         lyricController.setShowTranslation(it)
+                    }
+                }
+
+                launch {
+                    viewModel.isLyricWordTimingEnabled.collect {
+                        lyricController.setWordTimingEnabled(it)
                     }
                 }
 

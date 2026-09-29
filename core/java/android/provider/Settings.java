@@ -7082,7 +7082,14 @@ public final class Settings {
         public static final String QS_VOLUME_GRADIENT_ENABLED = "qs_volume_gradient_enabled";
 
         /**
-         * Gradient start color for tiles, brightness slider, and volume slider.
+         * Whether to enable gradient styling for the dual-shade Quick Settings status chip
+         * (signal and battery icons). 1 to enable, 0 to disable. Default is 1.
+         * @hide
+         */
+        public static final String QS_CHIP_GRADIENT_ENABLED = "qs_chip_gradient_enabled";
+
+        /**
+         * Gradient start color for tiles, brightness slider, volume slider, and QS status chip.
          * When non-zero ARGB, used as gradient start; 0 = use default from theme. Used with
          * ColorPickerSystemPreference.
          * @hide
@@ -7090,7 +7097,7 @@ public final class Settings {
         public static final String GRADIENT_START_COLOR = "gradient_start_color";
 
         /**
-         * Gradient end color for tiles, brightness slider, and volume slider.
+         * Gradient end color for tiles, brightness slider, volume slider, and QS status chip.
          * When non-zero ARGB, used as gradient end; 0 = use default from theme. Used with
          * ColorPickerSystemPreference.
          * @hide
@@ -7397,6 +7404,13 @@ public final class Settings {
          */
         public static final String STATUS_BAR_DYNAMIC_ISLAND_WIDTH =
                 "status_bar_dynamic_island_width";
+
+        /**
+         * Height scale of the collapsed dynamic island pill, as a percent (70-140).
+         * @hide
+         */
+        public static final String STATUS_BAR_DYNAMIC_ISLAND_HEIGHT_SCALE =
+                "status_bar_dynamic_island_height_scale";
 
         /**
          * Defines the screen-off animation to display
@@ -15560,6 +15574,19 @@ public final class Settings {
                 "status_bar_lyric_show_translation";
 
         /**
+         * Controls whether word-timed lyrics are requested when available.
+         * <ul>
+         *    <li> 0 = use line-timed lyrics only </li>
+         *    <li> 1 = prefer word-timed lyrics and fall back to line timing </li>
+         * </ul>
+         *
+         * @hide
+         */
+        @Readable
+        public static final String STATUS_BAR_LYRIC_WORD_TIMING =
+                "status_bar_lyric_word_timing";
+
+        /**
          * Controls whether the music app icon is hidden in clock-right lyric mode.
          * <ul>
          *    <li> 0 = show icon </li>
@@ -15573,14 +15600,16 @@ public final class Settings {
                 "status_bar_lyric_hide_icon_clock_right";
 
         /**
-         * Semicolon-separated package names allowed to provide status bar lyrics.
-         * An empty value denies all packages.
+         * Semicolon-separated HTTPS base URLs for custom lyric sources. Each source must provide
+         * GET /v1/lyrics?title=&artist=&album=&durationMs=&sourcePackage=&mediaId= and return
+         * the standard lyric payload. GET /v2/lyrics with the same parameters is optional and may
+         * return YRC word timing. An empty value uses the default remote source followed by the
+         * built-in lyric provider fallback.
          *
          * @hide
          */
         @Readable
-        public static final String STATUS_BAR_LYRIC_ALLOWED_PACKAGES =
-                "status_bar_lyric_allowed_packages";
+        public static final String STATUS_BAR_LYRIC_SOURCES = "status_bar_lyric_sources";
 
         /**
          * Integer property which determines whether advanced protection is on or not.

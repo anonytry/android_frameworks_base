@@ -1696,12 +1696,12 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
                 // when the row is transparent.
                 color = ColorUtils.setAlphaComponent(
                         color, (int) (0xFF * (isTransparent ? 0.9f : 1)));
-            } else {
-                // For non-colorized notifications, use the semi-transparent normal color token
-                // when the row is transparent, and the opaque color token otherwise.
-                if (!isTransparent && mBgTint == NO_COLOR) {
-                    color = mOpaqueColor;
-                }
+            } else if (isTransparent) {
+                // Template backgrounds are opaque. Groups have no template fill, so they already
+                // use the frosted surface-effect color. Use that same color for every other row.
+                color = mNormalColor;
+            } else if (mBgTint == NO_COLOR) {
+                color = mOpaqueColor;
             }
         }
         super.setBackgroundTintColor(color);
@@ -1984,6 +1984,12 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
         mPrivateLayout.setIsLowPriority(isMinimized);
         if (mChildrenContainer != null) {
             mChildrenContainer.setIsMinimized(isMinimized);
+        }
+        // Minimized group summaries hide the template fill and rely on the row background. Refresh
+        // tint/blur so autogroup cards do not stay fully transparent.
+        if (mBackgroundNormal != null) {
+            updateBackgroundTint();
+            mBackgroundNormal.setBlurBackgroundEnabled(usesBlurredBackground());
         }
     }
 
@@ -4266,12 +4272,8 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
 
     @Override
     protected boolean childNeedsClipping(View child) {
-        if (child instanceof NotificationContentView contentView) {
-            if (isClippingNeeded()) {
-                return true;
-            } else if (hasRoundedCorner()
-                    && contentView.shouldClipToRounding(getTopRoundness() != 0.0f,
-                    getBottomRoundness() != 0.0f)) {
+        if (child instanceof NotificationContentView) {
+            if (isClippingNeeded() || hasRoundedCorner()) {
                 return true;
             }
         } else if (child == mChildrenContainer) {

@@ -23,6 +23,8 @@ import android.graphics.RectF
 import android.provider.Settings
 import android.view.View
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.android.app.tracing.FlowTracing.traceEach
 import com.android.app.tracing.TrackGroupUtils.trackGroup
 import com.android.systemui.Flags
@@ -167,6 +169,12 @@ interface HomeStatusBarViewModel : Activatable {
      */
     fun onChipBoundsChanged(key: String, bounds: RectF)
 
+    /** Invoked when the centered dynamic island's on-screen bounds change. */
+    fun onIslandBoundsChanged(bounds: Rect)
+
+    /** Current on-screen bounds of the centered dynamic island, or empty if it is hidden. */
+    val dynamicIslandBounds: Rect
+
     /** Notifies that the status bar was tapped. */
     fun onStatusBarTap(eventX: Float)
 
@@ -226,6 +234,8 @@ interface HomeStatusBarViewModel : Activatable {
     val isLyricEnabled: Flow<Boolean>
     val isLyricClockRightMode: Flow<Boolean>
     val isLyricTranslationEnabled: Flow<Boolean>
+    val isLyricWordTimingEnabled: Flow<Boolean>
+        get() = flowOf(true)
     val isLyricClockRightHideIcon: Flow<Boolean>
 
     /**
@@ -376,6 +386,11 @@ constructor(
     override val dynamicIslandChips
         get() = dynamicIsland.shownPopupChips
 
+    private var islandBoundsState by mutableStateOf(Rect())
+
+    override val dynamicIslandBounds: Rect
+        get() = islandBoundsState
+
     override val areNotificationsLightsOut: Flow<Boolean> =
         combine(
                 notificationsInteractor.areAnyNotificationsPresent,
@@ -506,6 +521,12 @@ constructor(
 
     override fun onChipBoundsChanged(key: String, bounds: RectF) {
         ongoingActivityChipsViewModel.onChipBoundsChanged(key, bounds)
+    }
+
+    override fun onIslandBoundsChanged(bounds: Rect) {
+        if (islandBoundsState != bounds) {
+            islandBoundsState = Rect(bounds)
+        }
     }
 
     override fun onStatusBarTap(eventX: Float) {
@@ -659,6 +680,11 @@ constructor(
     override val isLyricTranslationEnabled: Flow<Boolean> =
         secureSettingsRepository
             .boolSetting(Settings.Secure.STATUS_BAR_LYRIC_SHOW_TRANSLATION, false)
+            .flowOn(bgDispatcher)
+
+    override val isLyricWordTimingEnabled: Flow<Boolean> =
+        secureSettingsRepository
+            .boolSetting(Settings.Secure.STATUS_BAR_LYRIC_WORD_TIMING, true)
             .flowOn(bgDispatcher)
 
     override val isLyricClockRightHideIcon: Flow<Boolean> =

@@ -17,7 +17,12 @@
 package com.android.systemui.statusbar.pipeline.shared.ui.composable
 
 import android.content.Context
+import android.database.ContentObserver
 import android.graphics.Rect
+import android.os.Handler
+import android.os.Looper
+import android.os.UserHandle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -39,6 +44,7 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -130,6 +136,8 @@ import com.android.systemui.statusbar.quickactions.island.ui.compose.StatusBarDy
 import com.android.systemui.statusbar.quickactions.island.ui.model.PopupChipId
 import com.android.systemui.statusbar.policy.Clock
 import com.android.systemui.statusbar.policy.KeyguardStateController
+import com.android.systemui.statusbar.policy.NetworkSpeedController
+import com.android.systemui.statusbar.policy.networkspeed.NetworkSpeedStatusBarIcon
 import com.android.systemui.statusbar.systemstatusicons.SystemStatusIconsInCompose
 import com.android.systemui.statusbar.systemstatusicons.domain.interactor.SystemStatusIconBlocklistInteractor
 import com.android.systemui.statusbar.systemstatusicons.ui.compose.SystemStatusIcons
@@ -167,6 +175,7 @@ constructor(
     private val headsUpManager: HeadsUpManager,
     private val mediaHierarchyManager: MediaHierarchyManager,
     private val axDynamicBarChipViewModel: AxDynamicBarChipViewModel,
+    private val networkSpeedController: NetworkSpeedController,
 ) {
     fun create(root: ViewGroup, andThen: (ViewGroup) -> Unit): ComposeView {
         val composeView = ComposeView(root.context)
@@ -195,6 +204,7 @@ constructor(
                         headsUpManager = headsUpManager,
                         mediaHierarchyManager = mediaHierarchyManager,
                         onViewCreated = andThen,
+                        networkSpeedController = networkSpeedController,
                         modifier = Modifier.sysUiResTagContainer(),
                     )
                 }
@@ -236,6 +246,7 @@ fun StatusBarRoot(
     headsUpManager: HeadsUpManager? = null,
     mediaHierarchyManager: MediaHierarchyManager? = null,
     axDynamicBarChipViewModel: AxDynamicBarChipViewModel,
+    networkSpeedController: NetworkSpeedController? = null,
     onViewCreated: (ViewGroup) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -259,6 +270,7 @@ fun StatusBarRoot(
     var touchableExclusionRegionDisposableHandle: DisposableHandle? = null
 
     val touchSlop = LocalViewConfiguration.current.touchSlop
+    val brightnessControlEnabled = rememberStatusBarBrightnessControlEnabled()
 
     // Let the DesktopStatusBar compose all the UI if [useDesktopStatusBar] is true.
     if (StatusBarForDesktop.isEnabled && statusBarViewModel.useDesktopStatusBar) {
@@ -269,7 +281,11 @@ fun StatusBarRoot(
             iconManagerFactory = tintedIconManagerFactory,
             iconViewStore = iconViewStore,
             modifier =
-                modifier.forwardDragAndSwipeToShadeRootView(shadeWindowRootView, touchSlop) {
+                modifier.forwardDragAndSwipeToShadeRootView(
+                    shadeWindowRootView,
+                    touchSlop,
+                    interceptHorizontal = brightnessControlEnabled,
+                ) {
                     position,
                     size,
                     isConsumed ->
@@ -319,7 +335,11 @@ fun StatusBarRoot(
                 if (SystemStatusIconsInCompose.isEnabled) {
                     phoneStatusBarView.requireViewById<View>(R.id.system_icons).visibility =
                         View.GONE
-                    addEndSideComposable(phoneStatusBarView, statusBarViewModel)
+                    addEndSideComposable(
+                        phoneStatusBarView,
+                        statusBarViewModel,
+                        networkSpeedController,
+                    )
                 } else {
                     val statusIconContainer =
                         phoneStatusBarView.requireViewById<StatusIconContainer>(R.id.statusIcons)
@@ -402,7 +422,11 @@ fun StatusBarRoot(
                                     }
                                 }
                             }
-                            .forwardDragAndSwipeToShadeRootView(shadeWindowRootView, touchSlop) {
+                            .forwardDragAndSwipeToShadeRootView(
+                                shadeWindowRootView,
+                                touchSlop,
+                                interceptHorizontal = brightnessControlEnabled,
+                            ) {
                                 position,
                                 size,
                                 isConsumed ->
@@ -425,13 +449,21 @@ fun StatusBarRoot(
         // Scene container hides the home status bar on lockscreen/shade. The island is a Compose
         // sibling of PhoneStatusBarView, so it must follow the same allowed state.
         val isHomeStatusBarAllowed by statusBarViewModel.isHomeStatusBarAllowed.collectAsState()
-        if (isHomeStatusBarAllowed && statusBarViewModel.dynamicIslandChips.isNotEmpty()) {
+        val showDynamicIsland =
+            isHomeStatusBarAllowed && statusBarViewModel.dynamicIslandChips.isNotEmpty()
+        LaunchedEffect(showDynamicIsland) {
+            if (!showDynamicIsland) {
+                statusBarViewModel.onIslandBoundsChanged(Rect())
+            }
+        }
+        if (showDynamicIsland) {
             StatusBarDynamicIslandContainer(
                 chips = statusBarViewModel.dynamicIslandChips,
                 onMediaControlPopupVisibilityChanged = { popupShowing ->
                     mediaHierarchyManager?.isMediaControlPopupShowing = popupShowing
                 },
                 islandActions = axDynamicBarChipViewModel.interactor,
+                onIslandBoundsChanged = statusBarViewModel::onIslandBoundsChanged,
                 modifier = Modifier.align(Alignment.Center),
             )
         }
@@ -553,6 +585,7 @@ private fun addStartSideComposable(
                         statusBarBoundsViewModel.startSideContainerBounds,
                         statusBarBoundsViewModel.dateBounds,
                         statusBarBoundsViewModel.clockBounds,
+                        statusBarViewModel.dynamicIslandBounds,
                         isRtl,
                         density,
                     ) {
@@ -562,6 +595,7 @@ private fun addStartSideComposable(
                                 statusBarBoundsViewModel.startSideContainerBounds,
                             dateBounds = statusBarBoundsViewModel.dateBounds,
                             clockBounds = statusBarBoundsViewModel.clockBounds,
+                            islandBounds = statusBarViewModel.dynamicIslandBounds,
                             isRtl = isRtl,
                             density = density,
                         )
@@ -569,9 +603,12 @@ private fun addStartSideComposable(
 
                 val axEnabled by axDynamicBarChipViewModel.interactor.settings.isEnabled.collectAsState()
                 if (axEnabled) {
+                    // chipsMaxWidth is 0 until the clock and start-side bounds are measured, and
+                    // also when that measurement is missed. A max of 0 collapses the chip.
+                    val dynamicBarMaxWidth = chipsMaxWidth.coerceAtLeast(25.dp)
                     AxDynamicBarChip(
                         viewModel = axDynamicBarChipViewModel,
-                        modifier = Modifier.widthIn(max = chipsMaxWidth),
+                        modifier = Modifier.widthIn(max = dynamicBarMaxWidth),
                     )
                 }
                 val chipsVisibilityModel = statusBarViewModel.ongoingActivityChips
@@ -617,6 +654,7 @@ fun chipsMaxWidth(
     clockBounds: Rect,
     isRtl: Boolean,
     density: Float,
+    islandBounds: Rect = Rect(),
 ): Dp {
     val relevantAppHandles =
         appHandles
@@ -627,19 +665,34 @@ fun chipsMaxWidth(
     // The chips should be next to the date if it is showing, otherwise they should be next to the
     // clock.
     val clockOrDateBounds = if (dateBounds.isEmpty) clockBounds else dateBounds
+    val islandGapPx = (8f * density).toInt()
 
     val widthInPx =
         if (isRtl) {
                 val chipsLeftBasedOnAppHandles =
                     relevantAppHandles.maxOfOrNull { it.right } ?: Int.MIN_VALUE
                 val chipsLeftBasedOnContainer = startSideContainerBounds.left
-                val chipsLeft = maxOf(chipsLeftBasedOnAppHandles, chipsLeftBasedOnContainer)
+                val chipsLeftBasedOnIsland =
+                    if (islandBounds.isEmpty) Int.MIN_VALUE else islandBounds.right + islandGapPx
+                val chipsLeft =
+                    maxOf(
+                        chipsLeftBasedOnAppHandles,
+                        chipsLeftBasedOnContainer,
+                        chipsLeftBasedOnIsland,
+                    )
                 /* width= */ clockOrDateBounds.left - chipsLeft
             } else { // LTR
                 val chipsRightBasedOnAppHandles =
                     relevantAppHandles.minOfOrNull { it.left } ?: Int.MAX_VALUE
                 val chipsRightBasedOnContainer = startSideContainerBounds.right
-                val chipsRight = minOf(chipsRightBasedOnAppHandles, chipsRightBasedOnContainer)
+                val chipsRightBasedOnIsland =
+                    if (islandBounds.isEmpty) Int.MAX_VALUE else islandBounds.left - islandGapPx
+                val chipsRight =
+                    minOf(
+                        chipsRightBasedOnAppHandles,
+                        chipsRightBasedOnContainer,
+                        chipsRightBasedOnIsland,
+                    )
                 /* width= */ chipsRight - clockOrDateBounds.right
             }
             .coerceAtLeast(0)
@@ -690,6 +743,7 @@ private fun addBatteryComposable(
 private fun addEndSideComposable(
     phoneStatusBarView: PhoneStatusBarView,
     statusBarViewModel: HomeStatusBarViewModel,
+    networkSpeedController: NetworkSpeedController?,
 ) {
     val endSideContainerView =
         phoneStatusBarView.requireViewById<View>(R.id.status_bar_end_side_container)
@@ -711,6 +765,7 @@ private fun addEndSideComposable(
                         modifier = Modifier.weight(1f, fill = false).sysuiResTag("system_icons"),
                         systemStatusIconBlockListInteractor =
                             statusBarViewModel.systemStatusIconBlockListInteractor,
+                        networkSpeedController = networkSpeedController,
                     )
 
                     val viewModel =
@@ -738,19 +793,31 @@ private fun SystemStatusIconsContainer(
     isDark: IsAreaDark,
     modifier: Modifier = Modifier,
     systemStatusIconBlockListInteractor: SystemStatusIconBlocklistInteractor,
+    networkSpeedController: NetworkSpeedController? = null,
 ) {
     var bounds by remember { mutableStateOf(Rect()) }
     val tint = if (isDark.isDarkTheme(bounds)) Color.White else Color.Black
-    SystemStatusIcons(
-        viewModelFactory = viewModelFactory,
-        tint = tint,
-        modifier =
-            modifier.onLayoutRectChanged { relativeLayoutBounds ->
-                bounds =
-                    with(relativeLayoutBounds.boundsInScreen) { Rect(left, top, right, bottom) }
-            },
-        systemStatusIconBlocklistInteractor = systemStatusIconBlockListInteractor,
-    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = modifier,
+    ) {
+        if (networkSpeedController != null) {
+            NetworkSpeedStatusBarIcon(controller = networkSpeedController, isDark = isDark)
+        }
+        SystemStatusIcons(
+            viewModelFactory = viewModelFactory,
+            tint = tint,
+            modifier =
+                Modifier.onLayoutRectChanged { relativeLayoutBounds ->
+                    bounds =
+                        with(relativeLayoutBounds.boundsInScreen) {
+                            Rect(left, top, right, bottom)
+                        }
+                },
+            systemStatusIconBlocklistInteractor = systemStatusIconBlockListInteractor,
+        )
+    }
 }
 
 private fun bindRegionSamplingViewModel(
@@ -817,9 +884,10 @@ private fun rememberViewWidthAsState(view: View): MutableIntState {
 fun Modifier.forwardDragAndSwipeToShadeRootView(
     view: View,
     touchSlop: Float,
+    interceptHorizontal: Boolean = false,
     onDown: (downPosition: Offset, size: IntSize, isConsumed: Boolean) -> Unit,
 ): Modifier =
-    pointerInput(view) {
+    pointerInput(view, interceptHorizontal) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
             val isConsumed = down.isConsumed
@@ -843,7 +911,14 @@ fun Modifier.forwardDragAndSwipeToShadeRootView(
                     } else {
                         // If not intercepting, check if we should start.
                         val dy = mainChange.position.y - down.position.y
-                        if (abs(dy) > touchSlop) {
+                        val dx = mainChange.position.x - down.position.x
+                        val exceedsSlop =
+                            if (interceptHorizontal) {
+                                abs(dx) > touchSlop || abs(dy) > touchSlop
+                            } else {
+                                abs(dy) > touchSlop
+                            }
+                        if (exceedsSlop) {
                             isIntercepting = true
 
                             // Slop exceeded. Dispatch the cached events...
@@ -866,6 +941,39 @@ fun Modifier.forwardDragAndSwipeToShadeRootView(
             }
         }
     }
+
+@Composable
+private fun rememberStatusBarBrightnessControlEnabled(): Boolean {
+    val context = LocalContext.current
+    val resolver = remember { context.contentResolver }
+
+    fun read(): Boolean {
+        return Settings.System.getIntForUser(
+            resolver,
+            Settings.System.STATUS_BAR_BRIGHTNESS_CONTROL,
+            0,
+            UserHandle.USER_CURRENT,
+        ) != 0
+    }
+
+    var enabled by remember { mutableStateOf(read()) }
+    DisposableEffect(resolver) {
+        val observer =
+            object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    enabled = read()
+                }
+            }
+        resolver.registerContentObserver(
+            Settings.System.getUriFor(Settings.System.STATUS_BAR_BRIGHTNESS_CONTROL),
+            false,
+            observer,
+            UserHandle.USER_ALL,
+        )
+        onDispose { resolver.unregisterContentObserver(observer) }
+    }
+    return enabled
+}
 
 /** Helper to dispatch a copy of the MotionEvent and consume all PointerChanges. */
 private fun dispatchAndConsume(event: PointerEvent, legacyView: View) {

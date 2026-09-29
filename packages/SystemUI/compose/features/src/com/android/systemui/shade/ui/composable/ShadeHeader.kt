@@ -28,7 +28,6 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,7 +44,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -54,10 +52,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -66,8 +67,10 @@ import androidx.core.graphics.ColorUtils
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -141,6 +144,9 @@ import kotlinx.coroutines.delay
 import platform.test.motion.compose.values.MotionTestValueKey
 import platform.test.motion.compose.values.motionTestValues
 
+/** Visual scale of the clock on the expanded combined-shade quick settings header. */
+private const val ExpandedClockScale = 2.57f
+
 object ShadeHeader {
     object Elements {
         val ExpandedContent = ElementKey("ShadeHeaderExpandedContent")
@@ -194,20 +200,46 @@ object ShadeHeader {
 /**
  * Observes double-taps on shade headers without consuming the gesture, so clock/chip clicks still
  * work. Used for both single-shade and dual-shade compose headers.
+ *
+ * Child clickables consume the pointer on the Main pass. Treating that as cancellation drops taps
+ * on dual-shade chips, so this tracks the pointer on the Initial pass and ignores consumption.
  */
 private fun Modifier.shadeHeaderDoubleTapToSleep(viewModel: ShadeHeaderViewModel): Modifier {
     return pointerInput(viewModel) {
         var lastUpUptime = 0L
+        var lastUpPosition = Offset.Zero
+        val touchSlop = viewConfiguration.touchSlop
+        val doubleTapTimeout = viewConfiguration.doubleTapTimeoutMillis
+        val doubleTapMinTime = viewConfiguration.doubleTapMinTimeMillis
+        // ViewConfiguration uses 100dp between the two taps.
+        val doubleTapSlop = 100.dp.toPx()
         awaitEachGesture {
-            awaitFirstDown(pass = PointerEventPass.Initial)
-            val up = waitForUpOrCancellation(pass = PointerEventPass.Initial)
-            if (up != null) {
-                val now = up.uptimeMillis
-                if (now - lastUpUptime <= viewConfiguration.doubleTapTimeoutMillis) {
-                    viewModel.onHeaderDoubleTapped()
-                    lastUpUptime = 0L
-                } else {
-                    lastUpUptime = now
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val pointerId = down.id
+            val downPosition = down.position
+            val sinceLastUp = down.uptimeMillis - lastUpUptime
+            val isSecondTap =
+                lastUpUptime != 0L &&
+                    sinceLastUp in doubleTapMinTime..doubleTapTimeout &&
+                    (downPosition - lastUpPosition).getDistance() <= doubleTapSlop
+            var exceededSlop = false
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                if (!exceededSlop && (change.position - downPosition).getDistance() > touchSlop) {
+                    exceededSlop = true
+                }
+                if (!change.pressed) {
+                    if (!exceededSlop && isSecondTap) {
+                        viewModel.onHeaderDoubleTapped()
+                        lastUpUptime = 0L
+                    } else if (!exceededSlop) {
+                        lastUpUptime = change.uptimeMillis
+                        lastUpPosition = change.position
+                    } else {
+                        lastUpUptime = 0L
+                    }
+                    break
                 }
             }
         }
@@ -342,6 +374,8 @@ fun ContentScope.ExpandedShadeHeader(
 
     val textColor = ShadeHeader.Colors.textColor
     val statusBarHeight = viewModel.statusBarHeightPx.toDp(LocalContext.current).dp
+    val density = LocalDensity.current
+    var clockWidthPx by remember { mutableIntStateOf(0) }
 
     Box(
         modifier =
@@ -366,12 +400,13 @@ fun ContentScope.ExpandedShadeHeader(
                 Clock(
                     viewModel = viewModel,
                     onClick = viewModel::onClockClicked,
-                    scale = 2.57f,
+                    scale = ExpandedClockScale,
                     textColor = textColor,
                     modifier =
                         Modifier.sysuiResTag("expanded_header_clock")
                             .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                             .wrapContentSize(Alignment.CenterStart),
+                    onUnscaledWidthChanged = { clockWidthPx = it },
                 )
                 if (!viewModel.isPrivacyChipVisible) {
                     // Full-width shared element (stable on expand); vertically centered on the clock.
@@ -384,7 +419,15 @@ fun ContentScope.ExpandedShadeHeader(
                             ShadeCarrierGroup(
                                 viewModel = viewModel,
                                 modifier =
-                                    Modifier.align(Alignment.CenterEnd).widthIn(max = 180.dp),
+                                    Modifier.align(Alignment.CenterEnd)
+                                        // The clock draws at ExpandedClockScale but only lays out
+                                        // at 1x. Reserve that overflow so the carrier cannot cover
+                                        // the last digit.
+                                        .padding(
+                                            start = with(density) { clockWidthPx.toDp() } *
+                                                ExpandedClockScale
+                                        )
+                                        .widthIn(max = 180.dp),
                             )
                         }
                     }
@@ -475,14 +518,16 @@ fun ContentScope.OverlayShadeHeader(
             }
         },
         endContent = {
+            val qsChip = rememberResolvedQsStatusChipHighlight(quickSettingsHighlight)
             Row(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.layoutId(ShadeHeader.LayoutId.EndContent),
             ) {
                 ShadeHighlightChip(
-                    backgroundColor = quickSettingsHighlight.backgroundColor,
-                    hoverBackgroundColor = quickSettingsHighlight.hoverBackgroundColor,
+                    backgroundColor = qsChip.backgroundColor,
+                    hoverBackgroundColor = qsChip.hoverBackgroundColor,
+                    backgroundBrush = qsChip.backgroundBrush,
                     onClick = viewModel::onSystemIconChipClicked,
                     clickTargetModifier =
                         Modifier.fillMaxHeight().padding(horizontal = horizontalPadding),
@@ -502,15 +547,15 @@ fun ContentScope.OverlayShadeHeader(
                         viewModel = viewModel,
                         useExpandedFormat = false,
                         modifier = Modifier.padding(end = paddingEnd).weight(1f, fill = false),
-                        foregroundColor = quickSettingsHighlight.foregroundColor.toArgb(),
-                        backgroundColor = quickSettingsHighlight.backgroundColor.toArgb(),
+                        foregroundColor = qsChip.foregroundColor.toArgb(),
+                        backgroundColor = qsChip.backgroundColor.toArgb(),
                     )
                     BatteryInfo(
                         viewModel = viewModel,
                         showIcon = true,
                         useExpandedFormat = false,
                         chipHighlightModel = quickSettingsHighlight,
-                        textColor = quickSettingsHighlight.foregroundColor,
+                        textColor = qsChip.foregroundColor,
                     )
                 }
                 if (!groupedPrivacyChip() && viewModel.isPrivacyChipVisible) {
@@ -659,6 +704,7 @@ private fun ContentScope.Clock(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     scale: Float = 1f,
+    onUnscaledWidthChanged: ((Int) -> Unit)? = null,
 ) {
     val layoutDirection = LocalLayoutDirection.current
     // Shared with the date so the two can never drift apart in weight or size.
@@ -677,11 +723,19 @@ private fun ContentScope.Clock(
 
         content {
             val clockModifier =
-                modifier
-                    .wrapContentWidth(unbounded = true)
+                // Outermost so a scene transition's fixed width cannot squeeze the text. The
+                // collapsed and expanded clocks differ by a few pixels (48dp min width, glyph
+                // advances, interruption rounding). Forcing the string into that interpolated
+                // width clips the last digit, and the QS scale makes it obvious. It shows up on
+                // some pulls and not others because it depends on progress and the current time.
+                Modifier.clockIntrinsicWidth()
+                    .onSizeChanged { onUnscaledWidthChanged?.invoke(it.width) }
+                    .then(modifier)
                     // use graphicsLayer instead of Modifier.scale to anchor transform to the
-                    // (start, top) corner
+                    // (start, top) corner. clip stays false so the scaled glyphs are not cut
+                    // to the unscaled layout box.
                     .graphicsLayer {
+                        clip = false
                         scaleX = animatedScale
                         scaleY = animatedScale
                         transformOrigin =
@@ -706,7 +760,8 @@ private fun ContentScope.Clock(
                     clockViewModel = clockViewModel,
                     textColor = textColor,
                     textStyle = textStyle,
-                    modifier = clockModifier,
+                    // Room for the last glyph's side bearing once the header scales the clock.
+                    modifier = clockModifier.padding(end = 2.dp),
                 )
             } else {
                 ClockLegacy(
@@ -744,8 +799,7 @@ private fun BatteryInfo(
             null -> IsAreaDark { isQuickSettingsDarkTheme }
             ChipHighlightModel.Transparent -> viewModel.isShadeAreaDark
             else -> {
-                val lightForeground =
-                    ColorUtils.calculateLuminance(highlight.foregroundColor.toArgb()) > 0.5
+                val lightForeground = ColorUtils.calculateLuminance(textColor.toArgb()) > 0.5
                 IsAreaDark { lightForeground }
             }
         }
@@ -757,6 +811,7 @@ private fun BatteryInfo(
         textColor = textColor,
         modifier = modifier.sysuiResTag(ShadeHeader.TestTags.BatteryTestTag),
         useAccentTintInContext = false, // QS header: no accent tint
+        iconTint = if (chipHighlightModel != null) textColor else null,
     )
 }
 
@@ -1048,6 +1103,21 @@ private fun Modifier.bouncy(
             .offset { IntOffset(x = 0, y = animatable.value.roundToInt()) }
     }
 }
+
+/**
+ * Measures the clock at its intrinsic width.
+ *
+ * Scene transitions measure this shared element with [Constraints.fixed] interpolated between the
+ * collapsed and expanded headers. That width is often a pixel or a glyph short of the current
+ * time, and [androidx.compose.foundation.layout.wrapContentWidth] then coerces the text back down
+ * to it. The last digit disappears, and the expanded-header scale makes the cut obvious.
+ */
+private fun Modifier.clockIntrinsicWidth(): Modifier =
+    layout { measurable, constraints ->
+        val placeable =
+            measurable.measure(constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity))
+        layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+    }
 
 private fun shouldUseExpandedFormat(state: SceneTransitionLayoutState): Boolean {
     return state.isIdle(Scenes.QuickSettings) ||
